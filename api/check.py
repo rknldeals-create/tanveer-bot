@@ -8,7 +8,7 @@ DATABASE_URL = os.getenv('DATABASE_URL')
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 CRON_SECRET = os.getenv('CRON_SECRET')
 
-# Amazon credentials from env
+# Amazon credentials
 AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
 AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
 AMAZON_PARTNER_TAG = os.getenv("AMAZON_PARTNER_TAG")
@@ -28,17 +28,19 @@ class handler(BaseHTTPRequestHandler):
 
         try:
             in_stock_messages = main_logic()
+
             if in_stock_messages:
                 print(f"Found {len(in_stock_messages)} items in stock. Sending Telegram message.")
                 final_message = "🔥 *Stock Alert!*\n\n" + "\n\n".join(in_stock_messages)
                 send_telegram_message(final_message)
             else:
-                print("All items out of stock. No message sent.")
+                print("All items out of stock or API failures. Notification sent.")
 
             self.send_response(200)
             self.send_header('Content-type', 'application/json')
             self.end_headers()
             self.wfile.write(json.dumps({'status': 'ok', 'found': len(in_stock_messages)}).encode())
+
         except Exception as e:
             print(f"Error: {e}")
             self.send_response(500)
@@ -96,7 +98,7 @@ def send_telegram_message(message):
             res = requests.post(url, json=payload, timeout=5)
             if res.status_code != 200:
                 print(f"⚠️ Telegram error for {chat_id}: {res.text}")
-            time.sleep(0.5)  # prevent Telegram rate-limit
+            time.sleep(0.5)  # prevent Telegram flood limit
         except Exception as e:
             print(f"❌ Failed to send to {chat_id}: {e}")
 
@@ -140,7 +142,7 @@ def get_signature_key(key, date_stamp, region_name, service_name):
     return sign(k_service, "aws4_request")
 
 def check_amazon(product):
-    """Check Amazon availability via PAAPI"""
+    """Check Amazon availability via PAAPI (single request, no retry)"""
     asin = product["productId"]
     method = "POST"
     endpoint = "https://webservices.amazon.in/paapi5/getitems"
@@ -199,22 +201,20 @@ def check_amazon(product):
 
     try:
         res = requests.post(endpoint, headers=headers, data=json.dumps(payload), timeout=10)
-        if res.status_code != 200:
-            print(f"Amazon API Error: {res.text}")
-            return None
-
         data = res.json()
-        if "ItemsResult" in data:
+
+        if res.status_code == 200 and "ItemsResult" in data:
             item = data["ItemsResult"]["Items"][0]
             title = item["ItemInfo"]["Title"]["DisplayValue"]
             availability = item["Offers"]["Listings"][0]["Availability"]["Message"]
             price = item["Offers"]["Listings"][0]["Price"]["DisplayAmount"]
             link = product["affiliateLink"] or product["url"]
             return f"🛒 *Amazon*\n[{title}]({link})\n💰 {price}\n📦 {availability}"
-        else:
-            print(f"Amazon API Error: {data}")
+
+        print(f"Amazon API Error: {data}")
     except Exception as e:
         print(f"Amazon check failed for {product['name']}: {e}")
+
     return None
 
 # --- 7. MAIN LOGIC ---
@@ -222,6 +222,7 @@ def main_logic():
     print("Starting stock check...")
     products = get_products_from_db()
     in_stock_messages = []
+    amazon_failures = 0
 
     for product in products:
         result = None
@@ -235,5 +236,13 @@ def main_logic():
             result = check_amazon(product)
             if result:
                 in_stock_messages.append(result)
+            else:
+                amazon_failures += 1
+
+    # Always notify if nothing found
+    if not in_stock_messages:
+        msg = f"❌ No stock available currently.\nAmazon API failed for {amazon_failures}/{sum(1 for p in products if p['storeType']=='amazon')} products."
+        print(msg)
+        send_telegram_message(msg)
 
     return in_stock_messages
