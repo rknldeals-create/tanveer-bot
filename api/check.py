@@ -153,62 +153,59 @@ def check_croma(product, pincode):
     return None
 
 # ==================================
-# 🟣 FLIPKART HTML CHECKER
+# 🟣 FLIPKART ROME API CHECKER
 # ==================================
-def check_flipkart(product, pincode="132001"):
+def check_flipkart_api(product, pincode="132001"):
+    """Direct call to Flipkart's Rome API (to test if Vercel IP works)."""
     try:
-        url = product["url"]
-        if "?pincode=" not in url:
-            if "?" in url:
-                url += f"&pincode={pincode}"
-            else:
-                url += f"?pincode={pincode}"
-
         headers = {
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "Origin": "https://www.flipkart.com",
+            "Referer": "https://www.flipkart.com",
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
                 "Chrome/120.0.0.0 Safari/537.36"
             ),
-            "Accept-Language": "en-US,en;q=0.9",
-            "Referer": "https://www.flipkart.com/",
+            "X-User-Agent": (
+                "Mozilla/5.0 FKUA/msite/0.0.3/msite/Mobile"
+            ),
+            "flipkart_secure": "true"
         }
 
-        res = requests.get(url, headers=headers, timeout=15)
+        payload = {
+            "requestContext": {
+                "products": [{"productId": product["productId"]}],
+                "marketplace": "FLIPKART"
+            },
+            "locationContext": {"pincode": pincode}
+        }
+
+        url = "https://2.rome.api.flipkart.com/api/3/product/serviceability"
+
+        res = requests.post(url, headers=headers, json=payload, timeout=15)
         if res.status_code != 200:
-            print(f"[FLIPKART] ⚠️ Failed ({res.status_code}) for {product['name']}")
+            print(f"[FLIPKART] ⚠️ API call failed for {product['name']} ({res.status_code})")
             return None
 
-        soup = BeautifulSoup(res.text, "html.parser")
+        data = res.json()
 
-        for tag in soup(["script", "style"]):
-            tag.decompose()
-        for comment in soup.find_all(string=lambda text: isinstance(text, Comment)):
-            comment.extract()
+        try:
+            listing = data["RESPONSE"][product["productId"]]["listingSummary"]
+            available = listing.get("available", False)
+        except Exception:
+            available = False
 
-        page_text = soup.get_text(separator=" ").lower()
-
-        unavailable_keywords = [
-            "not deliverable", "out of stock", "currently unavailable",
-            "sold out", "item not deliverable", "delivery not available"
-        ]
-        if any(k in page_text for k in unavailable_keywords):
-            print(f"[FLIPKART] ❌ {product['name']} not deliverable at {pincode}")
-            return None
-
-        delivery_elements = soup.find_all(
-            string=lambda text: text and any(k in text.lower() for k in ["delivery by", "get it by", "delivered by"])
-        )
-
-        if delivery_elements:
-            print(f"[FLIPKART] ✅ {product['name']} deliverable to {pincode}")
+        if available:
+            print(f"[FLIPKART] ✅ {product['name']} deliverable at {pincode}")
             return f"✅ *Flipkart*\n[{product['name']}]({product['affiliateLink'] or product['url']})"
 
-        print(f"[FLIPKART] ❌ {product['name']} not deliverable at {pincode}")
+        print(f"[FLIPKART] ❌ {product['name']} unavailable at {pincode}")
         return None
 
     except Exception as e:
-        print(f"[error] Flipkart check failed for {product['name']}: {e}")
+        print(f"[error] Flipkart API failed for {product['name']}: {e}")
         return None
 
 # ==================================
@@ -325,7 +322,7 @@ def main_logic():
         elif product["storeType"] == "flipkart":
             flip_total += 1
             for pincode in PINCODES_TO_CHECK:
-                result = check_flipkart(product, pincode)
+                result = check_flipkart_api(product, pincode)
                 if result:
                     flip_count += 1
                     in_stock.append(result)
