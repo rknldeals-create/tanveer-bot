@@ -5,26 +5,26 @@ generator client {
 }
 
 // This block defines your database connection.
-// It points to the Vercel Postgres database.
+// 💡 This configuration is optimized for Supabase/Serverless.
 datasource db {
   provider = "postgresql"
-  // This MUST match the variable Vercel created for you.
+  // 1. DATABASE_URL: Use the Supabase Transaction Pooler URL (for app runtime)
   url      = env("DATABASE_URL") 
+  // 2. DIRECT_URL: Use the Supabase Direct Connection URL (for Prisma CLI commands)
+  directUrl = env("DIRECT_URL")
 }
 
 // This is the model for your products table.
 // This defines the structure of your data.
 model Product {
-  id        Int      @id @default(autoincrement())
-  name      String
-  url       String
-  productId String   @map("product_id")
-  storeType String   @map("store_type")
-  createdAt DateTime @default(now()) @map("created_at")
-  partNumber String?  @map("part_number")
-
-  // --- ADD THIS LINE ---
-  affiliateLink String?  @map("affiliate_link") // Optional, for your link
+  id              Int      @id @default(autoincrement())
+  name            String
+  url             String
+  productId       String   @map("product_id")
+  storeType       String   @map("store_type")
+  createdAt       DateTime @default(now()) @map("created_at")
+  partNumber      String?  @map("part_number")
+  affiliateLink   String?  @map("affiliate_link") // Optional, for your link
 
   @@map("products")
 }
