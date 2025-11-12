@@ -1,0 +1,37 @@
+-- Set timezone to ensure consistency with Python script logic
+SET timezone TO 'UTC';
+
+-- Table for tracking products
+CREATE TABLE IF NOT EXISTS "products" (
+    "id" SERIAL NOT NULL,
+    "name" TEXT NOT NULL,
+    "url" TEXT NOT NULL,
+    "product_id" TEXT NOT NULL,
+    "store_type" TEXT NOT NULL,
+    "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "part_number" TEXT,
+    "affiliate_link" TEXT,
+
+    CONSTRAINT "products_pkey" PRIMARY KEY ("id")
+);
+
+-- Table for local license cache (licenses model in Prisma)
+CREATE TABLE IF NOT EXISTS "licenses" (
+    "client_id" TEXT NOT NULL,
+    "license_key" TEXT NOT NULL,
+    "valid_until" TIMESTAMP(3) NOT NULL,
+
+    -- client_id is the unique primary key, enabling UPSERT logic
+    CONSTRAINT "licenses_pkey" PRIMARY KEY ("client_id")
+);
+
+-- Optional: Create a unique index for fast lookups on license key
+CREATE UNIQUE INDEX IF NOT EXISTS "licenses_license_key_idx" ON "licenses" ("license_key");
+
+-- You can now insert your initial license information here if you want to preload it
+-- For example:
+/*
+INSERT INTO licenses (client_id, license_key, valid_until) VALUES
+('your-client-id', 'your-license-key', '2025-11-12T00:00:00Z')
+ON CONFLICT (client_id) DO NOTHING;
+*/

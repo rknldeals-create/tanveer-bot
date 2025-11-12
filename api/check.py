@@ -9,13 +9,178 @@ from bs4 import BeautifulSoup
 PINCODES_TO_CHECK = str(os.getenv("PINCODES_TO_CHECK"))
 PINCODES_TO_CHECK = PINCODES_TO_CHECK.split(",") 
 print(f"[config] Pincodes to check: {PINCODES_TO_CHECK}")
+# DATABASE_URL: Used for psycopg2 connection
 DATABASE_URL = os.getenv("DIRECT_URL")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_GROUP_ID = str(os.getenv("TELEGRAM_GROUP_ID")) # Telegram group ID
 CRON_SECRET = os.getenv("CRON_SECRET")
 
+# --- LICENSING CONFIG ---
+# NOTE: These must be set as environment variables (e.g., Vercel)
+LICENSE_SERVER_URL = os.getenv("LICENSE_SERVER_URL")
+CLIENT_ID = os.getenv("CLIENT_ID")
+LICENSE_KEY = os.getenv("LICENSE_KEY")
+
+# --- CACHING LOGIC CONFIG ---
+# If the local license is valid for less than this time (in days), try to refresh
+MIN_REFRESH_INTERVAL_DAYS = 3 
+# The duration (in months) to extend the local license if the server says it's OK.
+LICENSE_EXTENSION_MONTHS = 1
+
 # Flipkart Proxy (AlwaysData)
 FLIPKART_PROXY_URL = "https://rknldeals.alwaysdata.net/flipkart_check"
+
+# ==================================
+# 🗄️ DATABASE HELPERS
+# ==================================
+
+def get_db_connection():
+    """Returns a new psycopg2 connection configured for DIRECT_URL."""
+    if not DATABASE_URL:
+        raise Exception("DATABASE_URL environment variable is not set.")
+    # Set timezone awareness for datetime objects
+    conn = psycopg2.connect(DATABASE_URL)
+    conn.cursor().execute("SET timezone TO 'UTC'")
+    return conn
+
+def get_license_info():
+    """Retrieves the local license validity date from the database."""
+    print("[info] LICENSING: Fetching local license info...")
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        # Query the 'licenses' table (mapped from ClientLicense model)
+        cursor.execute(
+            "SELECT valid_until FROM licenses WHERE client_id = %s",
+            (CLIENT_ID,)
+        )
+        result = cursor.fetchone()
+        conn.close()
+    except Exception as e:
+        print(f"[error] LICENSING: Database read error (Did you run the Prisma migration?): {e}")
+        return None
+    
+    if result:
+        # returns the datetime object, implicitly UTC due to SET timezone above
+        valid_until = result[0].replace(tzinfo=datetime.timezone.utc)
+        print(f"[info] LICENSING: Found local license valid until {valid_until.isoformat()}")
+        return valid_until
+    
+    print("[info] LICENSING: No existing local license found in DB.")
+    return None
+
+def update_license_info(new_valid_until):
+    """Updates or inserts the local license validity date."""
+    # Ensure datetime object has UTC timezone info
+    if new_valid_until.tzinfo is None:
+         new_valid_until = new_valid_until.replace(tzinfo=datetime.timezone.utc)
+         
+    print(f"[info] LICENSING: Updating local license to {new_valid_until.isoformat()}...")
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # Use UPSERT logic (INSERT ON CONFLICT UPDATE) for PostgreSQL
+        # This inserts if the client_id is new, or updates if it already exists.
+        cursor.execute(
+            """
+            INSERT INTO licenses (client_id, license_key, valid_until) 
+            VALUES (%s, %s, %s)
+            ON CONFLICT (client_id) 
+            DO UPDATE SET valid_until = EXCLUDED.valid_until, license_key = EXCLUDED.license_key
+            """,
+            (CLIENT_ID, LICENSE_KEY, new_valid_until)
+        )
+        conn.commit()
+        conn.close()
+        print("[info] ✅ LICENSING: Local license successfully updated/extended.")
+    except Exception as e:
+        print(f"[error] LICENSING: Failed to update local license: {e}")
+
+# ==================================
+# 🔑 LICENSE CHECKER (DB CACHE + REMOTE REFRESH)
+# ==================================
+def check_license():
+    """
+    Checks the local DB cache first. If near expiry, calls the remote server 
+    to validate and extend the local license.
+    """
+    now = datetime.datetime.now(datetime.timezone.utc)
+    
+    # 1. Input/Config Check
+    if not all([LICENSE_SERVER_URL, CLIENT_ID, LICENSE_KEY]):
+        print("[error] ❌ LICENSING: Missing required environment variables (LICENSE_SERVER_URL, CLIENT_ID, LICENSE_KEY). Cannot proceed.")
+        return False
+        
+    # 2. Check local database cache
+    local_valid_until = get_license_info()
+    
+    remote_check_needed = True
+    
+    if local_valid_until:
+        time_left = local_valid_until - now
+        
+        if time_left.days >= MIN_REFRESH_INTERVAL_DAYS:
+            # Local cache is fine, skip remote check
+            remote_check_needed = False
+        
+        # If time_left is negative (already expired), remote_check_needed remains True
+
+    if not remote_check_needed:
+        return True # Local license is valid and sufficiently far from expiry
+
+    # 3. Perform remote check
+    payload = {
+        "client_id": CLIENT_ID,
+        "license_key": LICENSE_KEY,
+    }
+
+    try:
+        print("[info] 🔑 LICENSING: Performing remote validation...")
+        res = requests.post(LICENSE_SERVER_URL, json=payload, timeout=10)
+
+        if res.status_code == 200:
+            # Success! Extend the local expiry date.
+            
+            # Use the later of 'now' or the existing local expiry as the start point for extension.
+            # This prevents penalizing the user if the cron job stops for a while.
+            base_date = local_valid_until if local_valid_until and local_valid_until > now else now
+
+            # Calculate the new expiry date: base date + LICENSE_EXTENSION_MONTHS
+            new_valid_until = base_date + datetime.timedelta(days=30 * LICENSE_EXTENSION_MONTHS)
+            
+            # The server response (data.get("valid_until")) is ignored since we are extending, 
+            # but we trust the 200 status code to proceed.
+            
+            update_license_info(new_valid_until)
+            return True
+
+        elif res.status_code == 403:
+            # Remote server rejects the license (expired/invalid)
+            data = res.json()
+            error_msg = data.get("error", "Subscription expired or invalid key.")
+            print(f"[error] ❌ LICENSING: Remote check rejected: {error_msg}")
+            
+            # Crucially, we do NOT extend or update the local DB.
+            return False
+            
+        else:
+            print(f"[error] ❌ LICENSING: Server returned status code {res.status_code}. Response: {res.text}")
+            return False
+
+    except requests.exceptions.RequestException as e:
+        print(f"[error] ❌ LICENSING: Failed to connect to licensing server: {e}")
+        
+        # Server is unreachable. Check if we can rely on an unexpired local license.
+        if local_valid_until and local_valid_until > now:
+             print("[warn] ⚠️ LICENSING: Connection failed, but using *unexpired* local DB license cache.")
+             return True
+             
+        print("[error] ❌ LICENSING: Connection failed and local license is expired or missing. Cannot proceed.")
+        return False
+    except Exception as e:
+        print(f"[error] ❌ LICENSING: An unexpected error occurred during remote check: {e}")
+        return False
 
 # ==================================
 # 🧠 VERCEL HANDLER
@@ -33,6 +198,11 @@ class handler(BaseHTTPRequestHandler):
             return
 
         try:
+            # Check License before proceeding 
+            if not check_license():
+                # Raise an exception if the license check fails
+                raise Exception("License check failed. Terminating operation.")
+                
             in_stock_messages, summary = main_logic()
 
             # ✅ Only send Telegram message if at least one product is available
@@ -59,20 +229,24 @@ class handler(BaseHTTPRequestHandler):
             )
 
         except Exception as e:
-            print(f"[error] {e}")
-            self.send_response(500)
+            # Use 403 Forbidden for license errors
+            error_message = str(e)
+            if "License check failed" in error_message:
+                self.send_response(403)
+            else:
+                self.send_response(500)
+                
             self.send_header("Content-type", "application/json")
             self.end_headers()
-            self.wfile.write(json.dumps({"error": str(e)}).encode())
+            self.wfile.write(json.dumps({"error": error_message}).encode())
 
 # ==================================
-# 🗄️ DATABASE
+# 🗄️ DATABASE (Product query uses get_db_connection now)
 # ==================================
 def get_products_from_db():
     print("[info] Connecting to database...")
     # NOTE: psycopg2 should be installed if running this locally: pip install psycopg2-binary
-    # This line assumes DATABASE_URL is set in environment variables (Vercel/hosting environment).
-    conn = psycopg2.connect(DATABASE_URL) 
+    conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT name, url, product_id, store_type, affiliate_link FROM products")
     products = cursor.fetchall()
@@ -418,6 +592,11 @@ def check_iqoo(product):
 # 🚀 MAIN LOGIC (MODIFIED to include Unicorn, VIVO, and IQOO)
 # ==================================
 def main_logic():
+    # --- Check License before proceeding ---
+    if not check_license():
+        # Raise an exception if the license check fails
+        raise Exception("License check failed. Terminating operation.")
+        
     start_time = time.time()
     print("[info] Starting stock check...")
     products = get_products_from_db()

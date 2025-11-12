@@ -28,3 +28,13 @@ model Product {
 
   @@map("products")
 }
+
+// --- NEW: Model to cache licensing information for each client ---
+model ClientLicense {
+  // Use client_id as the unique identifier
+  clientId        String   @id @map("client_id")
+  licenseKey      String   @map("license_key")
+  validUntil      DateTime @map("valid_until")
+  
+  @@map("licenses")
+}
