@@ -346,7 +346,7 @@ def check_amazon(product):
         return None
 
 # ==================================
-# 🌐 RELIANCE DIGITAL API CHECKER (MODIFIED TO USE DB ID)
+# 🌐 RELIANCE DIGITAL API CHECKER
 # ==================================
 def check_reliance_digital(product, pincode):
     """
@@ -445,11 +445,20 @@ def check_reliance_digital(product, pincode):
 def check_iqoo(product):
     """
     Check stock availability for an iQOO product by scraping its product page.
-    Includes enhanced scraping for name, price, and offers list.
+    Includes enhanced scraping for name, price, and offers list, correctly handling SKU in URL.
     """
     url = product["url"]
     print(f"[IQOO] Checking: {url}")
 
+    # --- NEW SKU HANDLING ---
+    # The request is sent to the full URL, including the skuId if present (e.g., ?skuId=8392).
+    # This ensures the scraped page HTML is for the correct variant.
+    parsed_url = urlparse(url)
+    query_params = parse_qs(parsed_url.query)
+    sku_id = query_params.get('skuId', [None])[0]
+    if sku_id:
+        print(f"[IQOO] Checking specific SKU ID: {sku_id}")
+    
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -497,19 +506,20 @@ def check_iqoo(product):
         price_el = soup.select_one('.price-tag, .product-price, .current_price, .selling-price')
         price = price_el.get_text(strip=True) if price_el else None
         
-        # Attempt to scrape offers list (based on common UL structure)
-        # Using a more robust selector that finds ULs likely to contain offers
-        offers_ul = soup.select_one('div[class*="offers"] ul, ul[class*="offer-list"]') 
+        # Attempt to scrape offers list using general selectors based on common containers
+        offers_list = soup.select('.product-offers li, .discount-details li, .emi-details li, ul[class*="offer-list"] li')
         offers_text = ""
-        if offers_ul:
+        if offers_list:
             # Extract and join individual list item texts for clean display
-            offers_text = "\n".join([f"  - {li.get_text(strip=True)}" for li in offers_ul.find_all('li')])
+            offers_text = "\n".join([f"  - {li.get_text(strip=True)}" for li in offers_list])
         
         price_info = ""
         if price:
             price_info += f"\n💰 Price: {price}"
         if offers_text: 
-             price_info += f"\n🎁 Offers:\n{offers_text}"
+             # Only show 5 offers max to keep the message clean
+             top_offers = offers_text.split('\n')[:5]
+             price_info += f"\n🎁 Offers:\n" + "\n".join(top_offers)
 
 
         if is_available:
@@ -533,11 +543,21 @@ def check_iqoo(product):
 def check_vivo(product):
     """
     Check stock availability for a Vivo product by scraping its product page.
-    Includes enhanced scraping for name, price, and offers list.
+    Includes enhanced scraping for name, price, and offers list, correctly handling SKU in URL.
     """
     url = product["url"]
     original_name = product["name"]
     print(f"[VIVO] Checking: {original_name} at {url}")
+    
+    # --- NEW SKU HANDLING ---
+    # The request is sent to the full URL, including the skuId if present.
+    # This ensures the scraped page HTML is for the correct variant.
+    parsed_url = urlparse(url)
+    query_params = parse_qs(parsed_url.query)
+    sku_id = query_params.get('skuId', [None])[0]
+    if sku_id:
+        print(f"[VIVO] Checking specific SKU ID: {sku_id}")
+
 
     headers = {
         "User-Agent": (
@@ -587,18 +607,20 @@ def check_vivo(product):
         price_el = soup.select_one('.price-tag, .product-price, .current_price, .selling-price, .js-final-price')
         price = price_el.get_text(strip=True) if price_el else None
         
-        # Attempt to scrape offers list (based on common UL structure)
-        offers_ul = soup.select_one('div[class*="offers"] ul, ul[class*="offer-list"]')
+        # Attempt to scrape offers list using general selectors based on common containers
+        offers_list = soup.select('.product-offers li, .discount-details li, .emi-details li, ul[class*="offer-list"] li')
         offers_text = ""
-        if offers_ul:
+        if offers_list:
             # Extract and join individual list item texts for clean display
-            offers_text = "\n".join([f"  - {li.get_text(strip=True)}" for li in offers_ul.find_all('li')])
+            offers_text = "\n".join([f"  - {li.get_text(strip=True)}" for li in offers_list])
 
         price_info = ""
         if price:
             price_info += f"\n💰 Price: {price}"
         if offers_text: 
-             price_info += f"\n🎁 Offers:\n{offers_text}"
+             # Only show 5 offers max to keep the message clean
+             top_offers = offers_text.split('\n')[:5]
+             price_info += f"\n🎁 Offers:\n" + "\n".join(top_offers)
 
 
         if is_available:
