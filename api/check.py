@@ -450,9 +450,7 @@ def check_iqoo(product):
     url = product["url"]
     print(f"[IQOO] Checking: {url}")
 
-    # --- NEW SKU HANDLING ---
-    # The request is sent to the full URL, including the skuId if present (e.g., ?skuId=8392).
-    # This ensures the scraped page HTML is for the correct variant.
+    # --- SKU HANDLING (UNCHANGED) ---
     parsed_url = urlparse(url)
     query_params = parse_qs(parsed_url.query)
     sku_id = query_params.get('skuId', [None])[0]
@@ -472,11 +470,11 @@ def check_iqoo(product):
         html = res.text
         soup = BeautifulSoup(html, "html.parser")
 
-        # --- EXTRACT NAME from <title> or fallback ---
+        # --- EXTRACT NAME from <title> or fallback (UNCHANGED) ---
         page_title = soup.find('title')
         product_name = page_title.get_text(strip=True).split('|')[0].strip() if page_title else product["name"]
         
-        # --- KEY STOCK SCRAPING LOGIC ---
+        # --- KEY STOCK SCRAPING LOGIC (UNCHANGED) ---
         buy_now_button = soup.select_one('button:contains("Buy Now"), a:contains("Buy Now")')
         out_of_stock_phrases = ["out of stock", "currently unavailable", "notify me"]
         page_text = soup.get_text().lower()
@@ -502,17 +500,23 @@ def check_iqoo(product):
              is_available = False
              availability_text = "No clear button, but OOS text found."
 
-        # --- EXTRACT PRICE AND OFFERS ---
+        # --- EXTRACT PRICE AND OFFERS (MODIFIED) ---
         price_el = soup.select_one('.price-tag, .product-price, .current_price, .selling-price')
         price = price_el.get_text(strip=True) if price_el else None
         
-        # Attempt to scrape offers list using general selectors based on common containers
-        offers_list = soup.select('.product-offers li, .discount-details li, .emi-details li, ul[class*="offer-list"] li')
+        # *** NEW PRECISE SELECTOR FOR OFFERS ***
+        # Target the UL based on the outer container selector you provided.
+        # We look for the parent div.outside-box and then the ul.offer-list
+        offers_list_items = soup.select('div.outside-box ul.offer-list li.offer-item')
         offers_text = ""
-        if offers_list:
-            # Extract and join individual list item texts for clean display
-            offers_text = "\n".join([f"  - {li.get_text(strip=True)}" for li in offers_list])
         
+        if offers_list_items:
+            # Extract the content from the specific div.offer-content within each list item
+            offers_text = "\n".join([
+                f"  - {li.select_one('.offer-content').get_text(strip=True)}" 
+                for li in offers_list_items if li.select_one('.offer-content')
+            ])
+
         price_info = ""
         if price:
             price_info += f"\n💰 Price: {price}"
@@ -538,7 +542,7 @@ def check_iqoo(product):
         return None
 
 # ==================================
-# 🤳 VIVO HTML PARSER CHECKER (MODIFIED)
+# 🤳 VIVO HTML PARSER CHECKER (UNCHANGED, but applies similar logic)
 # ==================================
 def check_vivo(product):
     """
@@ -549,9 +553,7 @@ def check_vivo(product):
     original_name = product["name"]
     print(f"[VIVO] Checking: {original_name} at {url}")
     
-    # --- NEW SKU HANDLING ---
-    # The request is sent to the full URL, including the skuId if present.
-    # This ensures the scraped page HTML is for the correct variant.
+    # --- SKU HANDLING ---
     parsed_url = urlparse(url)
     query_params = parse_qs(parsed_url.query)
     sku_id = query_params.get('skuId', [None])[0]
@@ -608,7 +610,8 @@ def check_vivo(product):
         price = price_el.get_text(strip=True) if price_el else None
         
         # Attempt to scrape offers list using general selectors based on common containers
-        offers_list = soup.select('.product-offers li, .discount-details li, .emi-details li, ul[class*="offer-list"] li')
+        # Using general Vivo/iQOO class names
+        offers_list = soup.select('.product-offers li, .discount-details li, .emi-details li, ul.offer-list li')
         offers_text = ""
         if offers_list:
             # Extract and join individual list item texts for clean display
@@ -637,7 +640,6 @@ def check_vivo(product):
     except Exception as e:
         print(f"[error] Vivo check failed for {original_name}: {e}")
         return None
-
 # ==================================
 # 🚀 MAIN LOGIC
 # ==================================
